@@ -1,5 +1,11 @@
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { config as loadDotenv } from "dotenv";
+
+// Loads .env from the current working directory if present. Real
+// environment variables (e.g. set by an MCP client's `env` block, or
+// Docker's `-e`) always win -- dotenv never overrides an already-set var.
+loadDotenv();
 
 function boolEnv(name: string, fallback: boolean): boolean {
   const v = process.env[name];
