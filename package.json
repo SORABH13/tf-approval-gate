@@ -1,0 +1,48 @@
+{
+  "name": "tf-approval-gate",
+  "version": "0.1.0",
+  "description": "MCP server that lets AI agents plan, policy-check, cost-estimate, and apply Terraform changes -- but only after a real human approves in Slack (or CLI in dev mode).",
+  "type": "module",
+  "bin": {
+    "tf-approval-gate": "bin/tf-approval-gate.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "bin",
+    "policies"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "check-binaries": "tsx scripts/check-binaries.ts"
+  },
+  "license": "MIT",
+  "author": "Sourabh Yogi",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SORABH13/tf-approval-gate.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "@slack/bolt": "^4.1.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^8.68.0",
+    "@typescript-eslint/parser": "^8.68.0",
+    "eslint": "^10.9.1",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}
