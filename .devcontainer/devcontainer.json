@@ -1,0 +1,17 @@
+{
+  "name": "tf-approval-gate",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "target": "base"
+  },
+  "overrideCommand": true,
+  "postCreateCommand": "npm install",
+  "customizations": {
+    "vscode": {
+      "extensions": ["hashicorp.terraform", "esbenp.prettier-vscode"]
+    }
+  },
+  "remoteEnv": {
+    "APPROVAL_MODE": "cli"
+  }
+}

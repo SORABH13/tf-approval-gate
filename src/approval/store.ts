@@ -1,9 +1,9 @@
-import fs from "node:fs";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { config } from "../config.js";
+import type { SqlValue } from "sql.js";
+import { getDb, persist } from "./db.js";
 import { mintToken, verifyToken, hashToken } from "./token.js";
 import { appendAudit } from "../security/audit.js";
+import { config } from "../config.js";
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "consumed";
 
@@ -16,40 +16,52 @@ export interface PendingApproval {
   expiresAt: number;
   respondedBy?: string;
   respondedAt?: number;
-  approvalToken?: string; // present only in-memory/on-disk between approve and consume; never logged
+  approvalToken?: string; // present only between approve and consume; never logged
   slackMessageTs?: string;
   slackChannel?: string;
   summaryMarkdown: string;
 }
 
-const storePath = path.join(config.stateDir, "approvals.json");
-
-function load(): Record<string, PendingApproval> {
-  if (!fs.existsSync(storePath)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(storePath, "utf8"));
-  } catch {
-    return {};
-  }
+function rowToApproval(row: Record<string, unknown>): PendingApproval {
+  return {
+    id: row.id as string,
+    workspaceId: row.workspaceId as string,
+    planChecksum: row.planChecksum as string,
+    status: row.status as ApprovalStatus,
+    createdAt: row.createdAt as number,
+    expiresAt: row.expiresAt as number,
+    respondedBy: (row.respondedBy as string) ?? undefined,
+    respondedAt: (row.respondedAt as number) ?? undefined,
+    approvalToken: (row.approvalToken as string) ?? undefined,
+    slackMessageTs: (row.slackMessageTs as string) ?? undefined,
+    slackChannel: (row.slackChannel as string) ?? undefined,
+    summaryMarkdown: row.summaryMarkdown as string,
+  };
 }
 
-function save(all: Record<string, PendingApproval>): void {
-  fs.mkdirSync(config.stateDir, { recursive: true });
-  fs.writeFileSync(storePath, JSON.stringify(all, null, 2), "utf8");
+function queryOne(sql: string, params: Record<string, SqlValue>): PendingApproval | undefined {
+  const db = getDb();
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  const found = stmt.step();
+  const row = found ? (stmt.getAsObject() as Record<string, unknown>) : undefined;
+  stmt.free();
+  return row ? rowToApproval(row) : undefined;
 }
 
-function sweepExpired(all: Record<string, PendingApproval>): void {
-  const now = Date.now();
-  for (const a of Object.values(all)) {
-    if (a.status === "pending" && a.expiresAt < now) {
-      a.status = "expired";
-    }
-  }
+function run(sql: string, params: Record<string, SqlValue> = {}): number {
+  const db = getDb();
+  db.run(sql, params);
+  return db.getRowsModified();
+}
+
+/** Lazily marks any pending approval whose TTL has passed as expired. Runs before every read. */
+function sweepExpired(): void {
+  run("UPDATE approvals SET status = 'expired' WHERE status = 'pending' AND expiresAt < :now", { ":now": Date.now() });
 }
 
 export function createApproval(workspaceId: string, planChecksum: string, summaryMarkdown: string): PendingApproval {
-  const all = load();
-  sweepExpired(all);
+  sweepExpired();
   const approval: PendingApproval = {
     id: randomUUID(),
     workspaceId,
@@ -59,51 +71,79 @@ export function createApproval(workspaceId: string, planChecksum: string, summar
     expiresAt: Date.now() + config.approvalTtlMs,
     summaryMarkdown,
   };
-  all[approval.id] = approval;
-  save(all);
+  run(
+    `INSERT INTO approvals (id, workspaceId, planChecksum, status, createdAt, expiresAt, summaryMarkdown)
+     VALUES (:id, :workspaceId, :planChecksum, :status, :createdAt, :expiresAt, :summaryMarkdown)`,
+    {
+      ":id": approval.id,
+      ":workspaceId": approval.workspaceId,
+      ":planChecksum": approval.planChecksum,
+      ":status": approval.status,
+      ":createdAt": approval.createdAt,
+      ":expiresAt": approval.expiresAt,
+      ":summaryMarkdown": approval.summaryMarkdown,
+    },
+  );
+  persist();
   appendAudit({ type: "approval_created", workspaceId, approvalId: approval.id, planChecksum });
   return approval;
 }
 
 export function getApproval(id: string): PendingApproval | undefined {
-  const all = load();
-  sweepExpired(all);
-  save(all);
-  return all[id];
+  sweepExpired();
+  persist();
+  return queryOne("SELECT * FROM approvals WHERE id = :id", { ":id": id });
 }
 
 export function findPendingForWorkspace(workspaceId: string): PendingApproval | undefined {
-  const all = load();
-  sweepExpired(all);
-  save(all);
-  return Object.values(all).find((a) => a.workspaceId === workspaceId && a.status === "pending");
+  sweepExpired();
+  persist();
+  return queryOne(
+    "SELECT * FROM approvals WHERE workspaceId = :workspaceId AND status = 'pending' ORDER BY createdAt DESC LIMIT 1",
+    { ":workspaceId": workspaceId },
+  );
 }
 
 export function attachSlackMessage(id: string, channel: string, ts: string): void {
-  const all = load();
-  const a = all[id];
-  if (!a) return;
-  a.slackChannel = channel;
-  a.slackMessageTs = ts;
-  save(all);
+  run("UPDATE approvals SET slackChannel = :channel, slackMessageTs = :ts WHERE id = :id", {
+    ":channel": channel,
+    ":ts": ts,
+    ":id": id,
+  });
+  persist();
 }
 
-/** Atomically transitions pending -> approved|rejected. Idempotent no-op if already resolved. */
+/**
+ * Atomically transitions pending -> approved|rejected via a single guarded
+ * UPDATE (WHERE status = 'pending'). If another writer already resolved it
+ * first, rowsModified is 0 and we just return the current row -- idempotent
+ * no-op on a duplicate Slack click, not a race.
+ */
 export function resolveApproval(id: string, status: "approved" | "rejected", respondedBy: string): PendingApproval | undefined {
-  const all = load();
-  sweepExpired(all);
-  const a = all[id];
-  if (!a) return undefined;
-  if (a.status !== "pending") return a; // already resolved -- ignore duplicate clicks
-  a.status = status;
-  a.respondedBy = respondedBy;
-  a.respondedAt = Date.now();
-  if (status === "approved") {
-    a.approvalToken = mintToken(a.id, a.planChecksum, a.expiresAt);
+  sweepExpired();
+  const current = queryOne("SELECT * FROM approvals WHERE id = :id", { ":id": id });
+  if (!current) return undefined;
+  if (current.status !== "pending") {
+    persist();
+    return current; // already resolved -- ignore duplicate clicks
   }
-  save(all);
-  appendAudit({ type: `approval_${status}`, workspaceId: a.workspaceId, approvalId: a.id, planChecksum: a.planChecksum, actor: respondedBy });
-  return a;
+
+  const respondedAt = Date.now();
+  const approvalToken = status === "approved" ? mintToken(current.id, current.planChecksum, current.expiresAt) : null;
+
+  const changed = run(
+    `UPDATE approvals SET status = :status, respondedBy = :respondedBy, respondedAt = :respondedAt, approvalToken = :approvalToken
+     WHERE id = :id AND status = 'pending'`,
+    { ":status": status, ":respondedBy": respondedBy, ":respondedAt": respondedAt, ":approvalToken": approvalToken, ":id": id },
+  );
+  persist();
+
+  if (changed === 0) {
+    return queryOne("SELECT * FROM approvals WHERE id = :id", { ":id": id });
+  }
+
+  appendAudit({ type: `approval_${status}`, workspaceId: current.workspaceId, approvalId: id, planChecksum: current.planChecksum, actor: respondedBy });
+  return queryOne("SELECT * FROM approvals WHERE id = :id", { ":id": id });
 }
 
 /**
@@ -112,13 +152,13 @@ export function resolveApproval(id: string, status: "approved" | "rejected", res
  * from approving an outdated plan.
  */
 export function invalidateStaleApproval(id: string): PendingApproval | undefined {
-  const all = load();
-  const a = all[id];
-  if (!a || a.status !== "pending") return a;
-  a.status = "expired";
-  save(all);
-  appendAudit({ type: "approval_invalidated_stale_plan", workspaceId: a.workspaceId, approvalId: a.id, planChecksum: a.planChecksum });
-  return a;
+  const current = queryOne("SELECT * FROM approvals WHERE id = :id", { ":id": id });
+  if (!current || current.status !== "pending") return current;
+
+  run("UPDATE approvals SET status = 'expired' WHERE id = :id AND status = 'pending'", { ":id": id });
+  persist();
+  appendAudit({ type: "approval_invalidated_stale_plan", workspaceId: current.workspaceId, approvalId: id, planChecksum: current.planChecksum });
+  return queryOne("SELECT * FROM approvals WHERE id = :id", { ":id": id });
 }
 
 export type ConsumeResult =
@@ -128,26 +168,26 @@ export type ConsumeResult =
 /**
  * The only path by which tf_apply is allowed to proceed. Verifies the token
  * signature against the *current* planChecksum (so a re-plan invalidates old
- * tokens), then atomically flips approved -> consumed so the token can never
- * be used twice, even if it leaks.
+ * tokens), then atomically flips approved -> consumed via a single guarded
+ * UPDATE so the token can never be used twice, even if it leaks or two
+ * tf_apply calls race.
  */
 export function consumeToken(approvalId: string, token: string, currentPlanChecksum: string): ConsumeResult {
-  const all = load();
-  const a = all[approvalId];
-  if (!a) return { ok: false, reason: "not_found" };
-  if (a.status === "consumed") return { ok: false, reason: "already_consumed" };
-  if (a.status !== "approved") return { ok: false, reason: "not_approved" };
-  if (a.planChecksum !== currentPlanChecksum) return { ok: false, reason: "checksum_mismatch" };
+  const current = queryOne("SELECT * FROM approvals WHERE id = :id", { ":id": approvalId });
+  if (!current) return { ok: false, reason: "not_found" };
+  if (current.status === "consumed") return { ok: false, reason: "already_consumed" };
+  if (current.status !== "approved") return { ok: false, reason: "not_approved" };
+  if (current.planChecksum !== currentPlanChecksum) return { ok: false, reason: "checksum_mismatch" };
 
   const verified = verifyToken(token, currentPlanChecksum);
-  if (!verified.ok) {
-    return { ok: false, reason: verified.reason === "expired" ? "expired" : "bad_signature" };
-  }
+  if (!verified.ok) return { ok: false, reason: verified.reason === "expired" ? "expired" : "bad_signature" };
   if (verified.payload.approvalId !== approvalId) return { ok: false, reason: "bad_signature" };
 
-  a.status = "consumed";
+  const changed = run("UPDATE approvals SET status = 'consumed' WHERE id = :id AND status = 'approved'", { ":id": approvalId });
+  persist();
+  if (changed === 0) return { ok: false, reason: "already_consumed" };
+
   const tokenHash = hashToken(token);
-  save(all);
-  appendAudit({ type: "approval_consumed", workspaceId: a.workspaceId, approvalId: a.id, planChecksum: a.planChecksum, tokenHash });
-  return { ok: true, approval: a };
+  appendAudit({ type: "approval_consumed", workspaceId: current.workspaceId, approvalId, planChecksum: current.planChecksum, tokenHash });
+  return { ok: true, approval: { ...current, status: "consumed" } };
 }

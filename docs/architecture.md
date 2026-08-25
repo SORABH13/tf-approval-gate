@@ -60,10 +60,22 @@ test/unit/  test/e2e/
   threshold.
 - **v0.3 -- cost estimation.** ✅ implemented: Infracost wired into
   `tf_propose_change` and the Slack message, soft-fails when unconfigured.
-- **v0.4 -- harden (next).** SQLite-backed approval store (current store is
-  file-backed JSON, fine for v0.1 but not built for concurrent writers at
-  scale), broader replay/fuzz test coverage, load-tested subprocess
-  resource limits.
-- **v1.0 -- public release (next).** Devcontainer/Docker image with
-  Terraform/Checkov/OPA preinstalled, demo GIF, docs site, cold quick-start
-  test with outside users before the public post.
+- **v0.4 -- harden.** ✅ implemented: SQLite-backed approval store
+  (`src/approval/db.ts`, WASM `sql.js` -- no native compile step, so
+  `npx tf-approval-gate` stays a single command on any machine) with atomic
+  guarded `UPDATE ... WHERE status = 'pending'/'approved'` transitions
+  replacing the v0.1 file-backed JSON store's manual read-modify-write.
+  Plan-checksum re-validation against the binary artifact, SERVER_SECRET
+  isolation test, state-lock handling, provider/module allowlisting,
+  subprocess resource limits, stale-approval invalidation, partial-apply
+  result reporting, and replay-attack tests were all already in place from
+  earlier milestones.
+- **v1.0 -- public release.** ✅ README, docs, CI, MIT license, npm package,
+  GitHub repo, Slack app manifest, real-AWS smoke test
+  (`examples/aws-s3-demo`), and a Dockerfile + devcontainer with
+  Terraform/Checkov/Conftest preinstalled and verified (`docker build`,
+  binaries checked, and the MCP tools run end-to-end inside the container
+  against `examples/local-demo`) are all done. Still open: a demo GIF for
+  the README, and a cold quick-start test with 2-3 people who haven't seen
+  the repo before -- that one needs real outside testers, not something
+  that can be automated.

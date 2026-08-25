@@ -50,7 +50,8 @@ npm run check-binaries   # confirms terraform + checkov are on PATH
 Requires [Terraform](https://developer.hashicorp.com/terraform/install) and
 [Checkov](https://www.checkov.io/2.Basics/Installing%20Checkov.html) on
 `PATH`. OPA/Conftest and Infracost are optional (features soft-skip if
-missing).
+missing). Or skip installing anything and use the
+[Docker image](#docker--devcontainer) below, which bundles all three.
 
 Run it in dev mode (`APPROVAL_MODE=cli` prints the diff to the server's
 terminal and waits for a y/n instead of posting to Slack -- good for a first
@@ -83,6 +84,29 @@ providers, no cloud credentials required) and ask it to run
 `tf_workspace_init` → `tf_propose_change` → `tf_request_approval` →
 `tf_apply`.
 
+## Docker / devcontainer
+
+`docker build` produces an image with Node, Terraform, Checkov, and
+Conftest (OPA) preinstalled -- no host setup beyond Docker itself.
+
+```bash
+docker build -t tf-approval-gate .
+docker run --rm -it \
+  -e APPROVAL_MODE=cli \
+  -e TF_APPROVAL_GATE_SECRET=$(openssl rand -hex 32) \
+  -v "$(pwd)/examples/local-demo":/examples/local-demo:ro \
+  -v tf-approval-gate-data:/data \
+  tf-approval-gate
+```
+
+For Slack mode, add `-e SLACK_BOT_TOKEN=... -e SLACK_APP_TOKEN=... -e SLACK_APPROVAL_CHANNEL=... -e SLACK_APPROVER_USER_IDS=...`
+and drop `APPROVAL_MODE=cli`. Approval state persists in the `/data` volume
+(SQLite-backed, see [docs/architecture.md](docs/architecture.md)).
+
+A [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json) is
+also included for VS Code / GitHub Codespaces -- open the repo in a
+container and `terraform`/`checkov`/`conftest` are ready immediately.
+
 ## Slack setup (production mode)
 
 1. Create a Slack app from [examples/slack-app-manifest.yml](examples/slack-app-manifest.yml).
@@ -113,11 +137,14 @@ Full reference: [docs/tool-reference.md](docs/tool-reference.md).
 
 ## Status
 
-v0.1 -- happy path (Checkov, Slack Socket Mode / CLI fallback, file-backed
-approval store) is implemented and tested. See the roadmap in
-[docs/architecture.md](docs/architecture.md) for what's next (OPA, cost
-estimation are also implemented; SQLite-backed store and further hardening
-are tracked as v0.4).
+v0.1 through v0.4 are implemented and tested: happy path (Checkov, Slack
+Socket Mode / CLI fallback), OPA/Conftest, Infracost cost estimation, and a
+SQLite-backed approval store with atomic single-use token consumption. A
+Docker image and devcontainer are built and verified. Real end-to-end runs
+have been done against both the local `null`/`random` demo and a live AWS
+account (`examples/aws-s3-demo`). See [docs/architecture.md](docs/architecture.md)
+for the full roadmap and what's still open before a public launch post (a
+demo GIF and outside cold-testing -- see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## License
 

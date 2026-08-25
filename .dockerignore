@@ -1,0 +1,9 @@
+node_modules
+.tf-approval-gate
+.git
+.env
+*.log
+test
+examples
+docs
+.github
