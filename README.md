@@ -135,17 +135,6 @@ Full walkthrough: [docs/slack-setup.md](docs/slack-setup.md).
 
 Full reference: [docs/tool-reference.md](docs/tool-reference.md).
 
-## Status
-
-v0.1 through v0.4 are implemented and tested: happy path (Checkov, Slack
-Socket Mode / CLI fallback), OPA/Conftest, Infracost cost estimation, and a
-SQLite-backed approval store with atomic single-use token consumption. A
-Docker image and devcontainer are built and verified. Real end-to-end runs
-have been done against both the local `null`/`random` demo and a live AWS
-account (`examples/aws-s3-demo`). See [docs/architecture.md](docs/architecture.md)
-for the full roadmap and what's still open before a public launch post (a
-demo GIF and outside cold-testing -- see [CONTRIBUTING.md](CONTRIBUTING.md)).
-
 ## License
 
 MIT -- see [LICENSE](LICENSE).
